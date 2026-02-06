@@ -1,107 +1,83 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import feedparser # 需要在 requirements.txt 加入這個
 from datetime import datetime
 
-st.set_page_config(page_title="AI 全球財經智庫", layout="wide")
+st.set_page_config(page_title="全網情報彙整終端", layout="wide")
 
 # --- 側邊欄：功能選單 ---
-st.sidebar.title("🚀 智庫選單")
-app_mode = st.sidebar.selectbox("切換模塊", ["每日10大精選", "深度個股搜尋", "我的觀察清單"])
+st.sidebar.title("🌐 全網情報系統")
+app_mode = st.sidebar.selectbox("切換模塊", ["每日10大精選", "深度全網搜尋", "我的觀察清單"])
 
-# 輔助函式：安全抓取數據（避免 KeyError）
-def get_stock_intelligence(symbol):
+# 1. 新增：全網新聞彙整函式 (從 Google News 抓取)
+def get_global_news(symbol):
     try:
-        ticker = yf.Ticker(symbol)
-        info = ticker.info
-        
-        # 使用 .get() 確保找不到 key 時回傳預設值，不會報錯
+        # 抓取 Google News RSS 中關於該股票的新聞
+        rss_url = f"https://news.google.com/rss/search?q={symbol}+stock+when:7d&hl=en-US&gl=US&ceid=US:en"
+        feed = feedparser.parse(rss_url)
+        news_list = []
+        for entry in feed.entries[:5]: # 取前5則
+            news_list.append({"title": entry.title, "link": entry.link, "source": entry.source.get('title', 'Global News')})
+        return news_list
+    except:
+        return []
+
+# 2. 核心分析函式
+def get_comprehensive_analysis(symbol):
+    try:
+        tk = yf.Ticker(symbol)
+        info = tk.info
         current = info.get('currentPrice') or info.get('regularMarketPrice') or 0
         target = info.get('targetMeanPrice') or current
-        rec_key = info.get('recommendationKey', 'N/A')
         
-        # 彙整原因邏輯
-        reasons = []
-        if rec_key in ['buy', 'strong_buy']: reasons.append("✅ 分析師共識看多")
-        if (info.get('forwardPE', 0) or 0) < (info.get('trailingPE', 0) or 1): reasons.append("📈 預期獲利成長")
+        # 判斷邏輯：綜合目標價與機構評級
+        rec = info.get('recommendationKey', 'none').lower()
+        news = get_global_news(symbol)
         
-        reason_text = " | ".join(reasons) if reasons else "📊 走勢待觀察"
-        
+        status = "⏳ 觀望"
+        if target > current * 1.15 and "buy" in rec:
+            status = "💎 值得買入"
+            
         return {
+            "symbol": symbol,
             "price": current,
             "target": target,
-            "reason": reason_text,
-            "timeline": "6-12 個月",
-            "source": "Yahoo Finance"
+            "status": status,
+            "news": news
         }
-    except Exception:
+    except:
         return None
 
 # --- 功能 1: 每日10大精選 ---
 if app_mode == "每日10大精選":
-    st.header("📋 每日即時推薦清單 (Top 10)")
-    st.info(f"📅 數據更新時間：{datetime.now().strftime('%Y-%m-%d %H:%M')}")
-    
-    pool = ["NVDA", "AAPL", "MSFT", "TSLA", "GOOGL", "AMZN", "AMD", "META", "NFLX", "TSM", "AVGO", "COST"]
+    st.header("📋 全網推薦Top 10 (彙整多方數據)")
+    pool = ["NVDA", "AAPL", "MSFT", "TSLA", "GOOGL", "AMZN", "AMD", "META", "AVGO", "COST"]
     
     results = []
-    with st.spinner('正在分析全網數據...'):
+    with st.spinner('正在掃描全球財經媒體與機構數據...'):
         for s in pool:
-            data = get_stock_intelligence(s)
-            if data and data['price'] > 0:
-                results.append([s, data['price'], data['target'], data['reason'], data['timeline'], data['source']])
+            data = get_comprehensive_analysis(s)
+            if data:
+                results.append([data['symbol'], data['price'], data['target'], data['status'], "Google News / Yahoo / Analyst consensus"])
     
-    # 排序：找出獲利空間最大的
-    results.sort(key=lambda x: (x[2]-x[1])/x[1] if x[1]>0 else 0, reverse=True)
-    
-    df = pd.DataFrame(results[:10], columns=["代碼", "現價", "目標價", "推薦原因", "建議時間線", "資料來源"])
-    st.dataframe(df, use_container_width=True)
+    df = pd.DataFrame(results, columns=["代碼", "現價", "目標價", "系統評斷", "情報來源"])
+    st.table(df)
 
-# --- 功能 2: 深度個股搜尋 ---
-elif app_mode == "深度個股搜尋":
-    st.header("🔍 深度個股市場分析")
+# --- 功能 2: 深度全網搜尋 ---
+elif app_mode == "深度全網搜尋":
     symbol = st.text_input("輸入股票代碼", "NVDA").upper()
-    
     if symbol:
-        try:
-            tk = yf.Ticker(symbol)
-            info = tk.info
+        data = get_comprehensive_analysis(symbol)
+        if data:
+            st.subheader(f"🔍 {symbol} 跨平台情報彙整")
+            c1, c2 = st.columns(2)
+            c1.metric("即時市價", f"${data['price']}")
+            c1.metric("分析師平均目標價", f"${data['target']}")
             
-            # 頂部儀表板
-            c1, c2, c3 = st.columns(3)
-            curr = info.get('currentPrice') or info.get('regularMarketPrice', 'N/A')
-            targ = info.get('targetMeanPrice', 'N/A')
-            c1.metric("當前價格", f"${curr}")
-            c2.metric("分析師目標價", f"${targ}")
-            c3.metric("評級", info.get('recommendationKey', 'N/A').upper())
-            
-            st.subheader("💡 市場分析與建議")
-            st.write(f"**公司簡介：** {info.get('longBusinessSummary', '暫無資料')[:400]}...")
-            
-            # 顯示新聞
-            st.write("---")
-            st.write("📰 **最新相關新聞：**")
-            news = tk.news
-            if news:
-                for n in news[:5]:
-                    st.write(f"- [{n['title']}]({n['link']})")
+            st.write("### 🌍 全球最新報導 (彙整自各家媒體)")
+            if data['news']:
+                for n in data['news']:
+                    st.write(f"- **[{n['source']}]** [{n['title']}]({n['link']})")
             else:
-                st.write("暫無即時新聞。")
-                
-        except Exception as e:
-            st.error(f"搜尋出錯：請確認代碼 {symbol} 是否正確。")
-
-# --- 功能 3: 觀察清單 ---
-else:
-    st.header("📝 個人觀察清單")
-    if 'watchlist' not in st.session_state:
-        st.session_state.watchlist = ["AAPL", "NVDA"]
-    
-    new_s = st.text_input("新增股票代碼").upper()
-    if st.button("新增") and new_s:
-        if new_s not in st.session_state.watchlist:
-            st.session_state.watchlist.append(new_s)
-            st.rerun()
-
-    for s in st.session_state.watchlist:
-        st.write(f"**{s}**")
+                st.write("目前無相關全球即時報導。")
